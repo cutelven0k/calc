@@ -1,26 +1,42 @@
+#include <cerrno>
 #include <getopt.h>
 #include <mathlib.h>
 
-#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
-enum class operation { none,
+enum class operation : std::uint8_t {
+    none = 0,
     add,
     sub,
     mul,
     div,
     pow,
-    fact };
+    fact
+};
 
-enum class exit_code : int {
+enum class exit_code : std::uint8_t {
     ok = 0,
     usage = 1,
-    math = 2,
+    math = 2
 };
 
 namespace {
+
+struct context {
+    operation op = operation::none;
+    bool have_op = false;
+
+    std::int64_t a = 0;
+    bool have_a = false;
+
+    std::int64_t b = 0;
+    bool have_b = false;
+
+    mathlib::ml_result r {};
+};
 
 struct op_spec {
     const char* name;
@@ -38,7 +54,7 @@ constexpr op_spec kOps[] = {
 
 constexpr size_t kOpsCount = sizeof(kOps) / sizeof(kOps[0]);
 
-void print_help(const char* prog)
+void help(const char* prog)
 {
     std::printf(
         "Usage:\n"
@@ -64,28 +80,37 @@ void print_help(const char* prog)
         prog, prog, prog);
 }
 
-bool parse_int(const char* s, int* out)
+bool needs_b(operation op)
 {
-    if (!s || !out)
-        return false;
+    return op == operation::add || op == operation::sub || op == operation::mul || op == operation::div || op == operation::pow;
+}
 
+bool parse_i64(const char* s, std::int64_t* out)
+{
+    if (!s || !out) {
+        return false;
+    }
+
+    errno = 0;
     char* end = nullptr;
-    long v = std::strtol(s, &end, 10);
+    long long v = std::strtoll(s, &end, 10);
 
-    if (end == s || *end != '\0')
+    if (end == s || *end != '\0') {
         return false;
-    if (v < INT_MIN || v > INT_MAX)
+    }
+    if (errno == ERANGE) {
         return false;
+    }
 
-    *out = static_cast<int>(v);
+    *out = static_cast<std::int64_t>(v);
     return true;
 }
 
-bool parse_operation(const char* s, operation* out)
+bool parse_op(const char* s, operation* out)
 {
-    if (!s || !out)
+    if (!s || !out) {
         return false;
-
+    }
     for (size_t i = 0; i < kOpsCount; ++i) {
         if (std::strcmp(s, kOps[i].name) == 0) {
             *out = kOps[i].op;
@@ -95,111 +120,36 @@ bool parse_operation(const char* s, operation* out)
     return false;
 }
 
-bool needs_b(operation op)
+exit_code print_math_err(const char* where, mathlib::ml_error e)
 {
-    switch (op) {
-    case operation::add: {
-        return true;
-    }
-    case operation::sub: {
-        return true;
-    }
-    case operation::mul: {
-        return true;
-    }
-    case operation::div: {
-        return true;
-    }
-    case operation::pow: {
-        return true;
-    }
-    case operation::fact: {
-        return false;
-    }
-    case operation::none: {
-        return false;
-    }
-    default: {
-        return false;
-    }
-    }
-}
-
-int print_math_error(const char* name, mathlib::ml_error err)
-{
-    if (err == mathlib::ml_error::div0) {
-        std::fprintf(stderr, "Error: %s: division by zero\n", name);
+    if (e == mathlib::ml_error::div0) {
+        std::fprintf(stderr, "Error: %s: division by zero\n", where);
+    } else if (e == mathlib::ml_error::overflow) {
+        std::fprintf(stderr, "Error: %s: overflow\n", where);
     } else {
-        std::fprintf(stderr, "Error: %s: unknown math error\n", name);
+        std::fprintf(stderr, "Error: %s: math error\n", where);
     }
-    return static_cast<int>(exit_code::math);
+    return exit_code::math;
 }
 
-int run_operation(operation op, int a, int b)
+exit_code print_result(const mathlib::ml_result& r)
 {
-    switch (op) {
-    case operation::add: {
-        auto r = mathlib::ml_add(a, b);
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
+    if (r.error != mathlib::ml_error::ok) {
+        return print_math_err("calc", r.error);
     }
-    case operation::sub: {
-        auto r = mathlib::ml_sub(a, b);
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
+
+    if (r.kind == mathlib::ml_kind::i64) {
+        std::printf("%lld\n", static_cast<long long>(r.value.i64));
+    } else {
+        std::printf("%llu\n", static_cast<unsigned long long>(r.value.u64));
     }
-    case operation::mul: {
-        auto r = mathlib::ml_mul(a, b);
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
-    }
-    case operation::div: {
-        auto r = mathlib::ml_div(a, b);
-        if (r.error != mathlib::ml_error::ok)
-            return print_math_error("div", r.error);
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
-    }
-    case operation::pow: {
-        if (b < 0) {
-            std::fprintf(stderr, "Error: pow: domain error (b must be >= 0)\n");
-            return static_cast<int>(exit_code::math);
-        }
-        auto r = mathlib::ml_pow(a, static_cast<unsigned int>(b));
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
-    }
-    case operation::fact: {
-        if (a < 0) {
-            std::fprintf(stderr, "Error: fact: domain error (a must be >= 0)\n");
-            return static_cast<int>(exit_code::math);
-        }
-        auto r = mathlib::ml_fact(static_cast<unsigned int>(a));
-        std::printf("%d\n", r.value);
-        return static_cast<int>(exit_code::ok);
-    }
-    case operation::none: {
-        std::fprintf(stderr, "Error: unknown operation\n");
-        return static_cast<int>(exit_code::usage);
-    }
-    default: {
-        std::fprintf(stderr, "Error: unknown operation\n");
-        return static_cast<int>(exit_code::usage);
-    }
-    }
+
+    return exit_code::ok;
 }
 
-} // namespace
-
-int main(int argc, char** argv)
+exit_code parse(context& c, int argc, char** argv)
 {
-    int a = 0, b = 0;
-    bool have_a = false, have_b = false;
-
-    operation op = operation::none;
-    bool have_op = false;
-
-    static const option long_opts[] = {
+    const option long_opts[] = {
         { "op", required_argument, nullptr, 'o' },
         { "a", required_argument, nullptr, 'a' },
         { "b", required_argument, nullptr, 'b' },
@@ -208,67 +158,133 @@ int main(int argc, char** argv)
     };
 
     opterr = 0;
-
-    int c = 0;
-    while ((c = getopt_long(argc, argv, "o:a:b:h", long_opts, nullptr)) != -1) {
-        switch (c) {
+    int ch = 0;
+    while ((ch = getopt_long(argc, argv, "o:a:b:h", long_opts, nullptr)) != -1) {
+        switch (ch) {
         case 'o': {
-            have_op = parse_operation(optarg, &op);
-            if (!have_op) {
+            c.have_op = parse_op(optarg, &c.op);
+            if (!c.have_op) {
                 std::fprintf(stderr, "Error: unknown operation '%s'\n", optarg);
-                return static_cast<int>(exit_code::usage);
+                return exit_code::usage;
             }
             break;
         }
         case 'a': {
-            have_a = parse_int(optarg, &a);
-            if (!have_a) {
+            c.have_a = parse_i64(optarg, &c.a);
+            if (!c.have_a) {
                 std::fprintf(stderr, "Error: invalid integer for -a: '%s'\n", optarg);
-                return static_cast<int>(exit_code::usage);
+                return exit_code::usage;
             }
             break;
         }
         case 'b': {
-            have_b = parse_int(optarg, &b);
-            if (!have_b) {
+            c.have_b = parse_i64(optarg, &c.b);
+            if (!c.have_b) {
                 std::fprintf(stderr, "Error: invalid integer for -b: '%s'\n", optarg);
-                return static_cast<int>(exit_code::usage);
+                return exit_code::usage;
             }
             break;
         }
         case 'h': {
-            print_help(argv[0]);
-            return static_cast<int>(exit_code::ok);
+            help(argv[0]);
+            return exit_code::usage;
         }
         default: {
-            print_help(argv[0]);
-            return static_cast<int>(exit_code::usage);
+            help(argv[0]);
+            return exit_code::usage;
         }
         }
     }
+    return exit_code::ok;
+}
 
-    if (!have_op || !have_a) {
-        std::fprintf(stderr, "Error: missing required arguments\n");
-        print_help(argv[0]);
-        return static_cast<int>(exit_code::usage);
+exit_code check(const context& c, const char* prog)
+{
+    if (!c.have_op || !c.have_a) {
+        std::fprintf(stderr, "Error: missing -o or -a\n");
+        help(prog);
+        return exit_code::usage;
     }
-
-    if (!needs_b(op) && have_b) {
-        std::fprintf(stderr, "Error: useless -b for this operation\n");
-        print_help(argv[0]);
-        return static_cast<int>(exit_code::usage);
+    if (!needs_b(c.op) && c.have_b) {
+        std::fprintf(stderr, "Error: useless -b for this op\n");
+        help(prog);
+        return exit_code::usage;
     }
-
-    if (needs_b(op) && !have_b) {
-        std::fprintf(stderr, "Error: missing -b for this operation\n");
-        print_help(argv[0]);
-        return static_cast<int>(exit_code::usage);
+    if (needs_b(c.op) && !c.have_b) {
+        std::fprintf(stderr, "Error: missing -b for this op\n");
+        help(prog);
+        return exit_code::usage;
     }
-
-    if (op == operation::pow && b < 0) {
+    if (c.op == operation::pow && c.b < 0) {
         std::fprintf(stderr, "Error: pow: domain error (b must be >= 0)\n");
-        return static_cast<int>(exit_code::math);
+        return exit_code::math;
+    }
+    if (c.op == operation::fact && c.a < 0) {
+        std::fprintf(stderr, "Error: fact: domain error (a must be >= 0)\n");
+        return exit_code::math;
+    }
+    return exit_code::ok;
+}
+
+exit_code calc(context& c)
+{
+    switch (c.op) {
+    case operation::add: {
+        c.r = mathlib::ml_add(c.a, c.b);
+        break;
+    }
+    case operation::sub: {
+        c.r = mathlib::ml_sub(c.a, c.b);
+        break;
+    }
+    case operation::mul: {
+        c.r = mathlib::ml_mul(c.a, c.b);
+        break;
+    }
+    case operation::div: {
+        c.r = mathlib::ml_div(c.a, c.b);
+        break;
+    }
+    case operation::pow: {
+        c.r = mathlib::ml_pow(c.a, static_cast<std::uint64_t>(c.b));
+        break;
+    }
+    case operation::fact: {
+        c.r = mathlib::ml_fact(static_cast<std::uint64_t>(c.a));
+        break;
+    }
+    case operation::none:
+    default: {
+        std::fprintf(stderr, "Error: unknown operation\n");
+        return exit_code::usage;
+    }
+    }
+    return exit_code::ok;
+}
+
+int run(int argc, char** argv)
+{
+    context c {};
+    exit_code rc = parse(c, argc, argv);
+    if (rc != exit_code::ok) {
+        return static_cast<int>(rc);
     }
 
-    return run_operation(op, a, b);
+    rc = check(c, argv[0]);
+    if (rc != exit_code::ok) {
+        return static_cast<int>(rc);
+    }
+
+    rc = calc(c);
+    if (rc != exit_code::ok) {
+        return static_cast<int>(rc);
+    }
+    return static_cast<int>(print_result(c.r));
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    return run(argc, argv);
 }
